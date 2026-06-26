@@ -17,7 +17,7 @@ import numpy as np
 # ── 项目模块导入 ────────────────────────────────────────────
 from src.analyzer import preprocess_data, train_model
 from src.visualizer import generate_plots
-from src.scraper import fetch_and_save
+from src.scraper import fetch_and_save, _set_logger as _set_scraper_logger
 from assets.app_template import APP_TEMPLATE
 
 
@@ -266,13 +266,19 @@ class BilibiliAnalyzerApp:
         y = (sh - h) // 2
         win.geometry(f"{w}x{h}+{x}+{y}")
 
-    def _crawl_worker(self, pages, callback):
-        """爬虫后台线程：采集、验证、回调（无 dialog 参数，dialog 在此之前已销毁）"""
+    def _crawl_worker(self, pages, append, callback):
+        """爬虫后台线程：注入日志回调后执行爬虫"""
         self.crawling = True
+
+        # 注入日志回调：所有 scraper 内的 _LOG() 都转发到 GUI
+        def gui_log(msg):
+            self.root.after(0, self._log, msg, "info")
+        _set_scraper_logger(gui_log)
+
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
 
-            df = fetch_and_save(filename=RAW_DATA, pages=pages)
+            df = fetch_and_save(filename=RAW_DATA, pages=pages, append=append)
             self.root.after(0, lambda d=df: self._log(
                 f"[爬虫] 采集完成！共 {len(d)} 条视频", "success"))
             self.root.after(0, lambda: self._log(
@@ -285,6 +291,8 @@ class BilibiliAnalyzerApp:
             self.root.after(0, lambda m=err_msg: messagebox.showerror(
                 "采集失败", f"爬虫异常:\n{m}"))
         finally:
+            # 恢复日志函数为默认 print
+            _set_scraper_logger(print)
             self.crawling = False
 
     def _step1_crawl(self, mode_dialog):
@@ -297,10 +305,9 @@ class BilibiliAnalyzerApp:
         # 弹窗询问采集页数
         pages_win = tk.Toplevel(self.root)
         pages_win.title("采集设置")
-        pages_win.geometry("320x200")
         pages_win.resizable(False, False)
         pages_win.grab_set()
-        self._center_window(pages_win, 320, 200)
+        self._center_window(pages_win, 320, 240)
         pages_win.configure(bg="#F0F0F0")
 
         tk.Label(pages_win, text="每源采集页数",
@@ -311,7 +318,8 @@ class BilibiliAnalyzerApp:
                  font=("Microsoft YaHei", 9),
                  bg="#F0F0F0", fg="#888888").pack()
 
-        pages_var = tk.IntVar(value=5)
+        pages_var = tk.IntVar(value=3)
+        append_var = tk.BooleanVar(value=False)
 
         def on_pages_confirm():
             p = pages_var.get()
@@ -319,25 +327,37 @@ class BilibiliAnalyzerApp:
                 messagebox.showwarning("提示", "页数范围 1~50")
                 return
             pages_win.destroy()
-            self._log(f"[爬虫] 开始采集 {p} 页数据，请稍候 ...", "info")
-            # 启动后台线程
+            mode = "追加" if append_var.get() else "覆盖"
+            self._log(f"[爬虫] 开始采集 {p} 页数据（{mode}模式），请稍候 ...", "info")
             t = threading.Thread(
                 target=self._crawl_worker,
-                args=(p, lambda: self._finish_step1()),
+                args=(p, append_var.get(), lambda: self._finish_step1()),
                 daemon=True,
             )
             t.start()
 
-        # Spinbox + 确认
+        # Spinbox
+        tk.Label(pages_win, text="每源采集页数:",
+                 font=("Microsoft YaHei", 10),
+                 bg="#F0F0F0").pack()
         spin = tk.Spinbox(pages_win, from_=1, to=50, textvariable=pages_var,
                           width=10, font=("Consolas", 12),
                           justify=tk.CENTER, bd=2)
-        spin.pack(pady=10)
+        spin.pack(pady=6)
+
+        # Append checkbox
+        cb = tk.Checkbutton(pages_win,
+                            text="追加模式（保留原有数据，合并去重）",
+                            variable=append_var,
+                            font=("Microsoft YaHei", 9),
+                            bg="#F0F0F0", fg="#555555",
+                            selectcolor="#F0F0F0")
+        cb.pack(pady=4)
 
         btn = tk.Button(pages_win, text="开始采集", command=on_pages_confirm,
                         width=15, height=1, font=("Microsoft YaHei", 10),
                         bg="#3498DB", fg="white")
-        btn.pack(pady=5)
+        btn.pack(pady=8)
 
     def _step1_import_file(self, dialog):
         """打开文件选择对话框，导入 CSV / XLSX 数据"""
@@ -361,7 +381,9 @@ class BilibiliAnalyzerApp:
         ext = os.path.splitext(file_path)[1].lower()
 
         try:
-            if ext == ".csv":
+            if os.path.abspath(file_path) == os.path.abspath(RAW_DATA):
+                self._log(f"[数据采集] 文件已在目标位置，跳过复制", "info")
+            elif ext == ".csv":
                 shutil.copy2(file_path, RAW_DATA)
                 self._log(f"[数据采集] CSV 已复制到 {RAW_DATA}", "success")
             elif ext == ".xlsx":

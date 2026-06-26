@@ -9,6 +9,16 @@ import random
 import requests
 import pandas as pd
 
+# ── 工具函数：默认日志打印到终端 ─────────────────────────
+_LOG = print
+
+
+def _set_logger(func):
+    """全局替换日志函数（供 GUI 注入回调）"""
+    global _LOG
+    _LOG = func
+
+
 # ── 浏览器伪装 ──────────────────────────────────────────────
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -43,11 +53,8 @@ def _init_session():
             timeout=10,
         )
         resp.encoding = "utf-8"
-        # 提取任何 Set-Cookie
-        if resp.cookies:
-            pass  # Session 自动保存
     except requests.RequestException:
-        pass  # 首页请求失败不影响后续，只是少了 cookies
+        pass
 
 
 # ── 工具函数 ────────────────────────────────────────────────
@@ -74,15 +81,15 @@ def _fetch_json(url, timeout=15):
     try:
         resp = _SESSION.get(url, headers=_random_headers(), timeout=timeout)
         if resp.status_code != 200:
-            print(f"[WARN] HTTP {resp.status_code} <- {url}")
+            _LOG(f"[WARN] HTTP {resp.status_code} <- {url}")
             return None
         data = resp.json()
         if data.get("code") != 0:
-            print(f"[WARN] API code={data.get('code')}, msg={data.get('message', '')} <- {url}")
+            _LOG(f"[WARN] API code={data.get('code')}, msg={data.get('message', '')} <- {url}")
             return None
         return data
     except requests.RequestException as e:
-        print(f"[ERROR] 请求失败 {url} -> {e}")
+        _LOG(f"[ERROR] 请求失败 {url} -> {e}")
         return None
 
 
@@ -112,30 +119,24 @@ def _extract_video(item):
 
 
 def fetch_popular_list(pages=3):
-    """
-    从「热门推荐」接口采集数据。
-    接口：/x/web-interface/popular
-    每次返回约 40 条热门视频，通过 pn 参数分页。
-
-    这是B站最稳定的公开API之一，无需特殊权限。
-    """
+    """热门推荐接口：/x/web-interface/popular"""
     all_videos = []
     base_url = "https://api.bilibili.com/x/web-interface/popular"
 
     for pn in range(1, pages + 1):
         url = f"{base_url}?pn={pn}&ps=50"
-        print(f"[爬虫] 正在采集 热门推荐 第{pn}页 ...")
+        _LOG(f"[爬虫] 正在采集 热门推荐 第{pn}页 ...")
         data = _fetch_json(url)
         if data is None:
-            print(f"[爬虫] 热门推荐 第{pn}页 采集失败，跳过")
+            _LOG(f"[爬虫] 热门推荐 第{pn}页 采集失败，跳过")
             continue
 
         video_list = data.get("data", {}).get("list", [])
         for item in video_list:
             all_videos.append(_extract_video(item))
 
-        print(f"[爬虫] 热门推荐 第{pn}页 获取 {len(video_list)} 条，"
-              f"累计 {len(all_videos)} 条")
+        _LOG(f"[爬虫] 热门推荐 第{pn}页 获取 {len(video_list)} 条，"
+             f"累计 {len(all_videos)} 条")
 
         time.sleep(random.uniform(0.5, 1.5))
 
@@ -143,103 +144,64 @@ def fetch_popular_list(pages=3):
 
 
 def fetch_knowledge_zone(pages=3):
-    """
-    从「分区动态」接口采集知识区视频。
-    接口：/x/web-interface/dynamic/region?rid=36&ps=50&pn={n}
-    rid=36 为知识区，每次约 50 条，多页翻采。
-    这个接口返回的是知识区最新热门内容，非常适合本项目的需求。
-    """
+    """知识区分区动态接口：/x/web-interface/dynamic/region?rid=36"""
     all_videos = []
     base_url = "https://api.bilibili.com/x/web-interface/dynamic/region"
 
     for pn in range(1, pages + 1):
         url = f"{base_url}?rid=36&ps=50&pn={pn}"
-        print(f"[爬虫] 正在采集 知识区动态 第{pn}页 ...")
+        _LOG(f"[爬虫] 正在采集 知识区动态 第{pn}页 ...")
         data = _fetch_json(url)
         if data is None:
-            print(f"[爬虫] 知识区动态 第{pn}页 采集失败，跳过")
+            _LOG(f"[爬虫] 知识区动态 第{pn}页 采集失败，跳过")
             continue
 
         video_list = data.get("data", {}).get("archives", [])
         for item in video_list:
             all_videos.append(_extract_video(item))
 
-        print(f"[爬虫] 知识区动态 第{pn}页 获取 {len(video_list)} 条，"
-              f"累计 {len(all_videos)} 条")
+        _LOG(f"[爬虫] 知识区动态 第{pn}页 获取 {len(video_list)} 条，"
+             f"累计 {len(all_videos)} 条")
 
         time.sleep(random.uniform(0.5, 1.5))
 
     return all_videos
 
 
-def fetch_popular_series():
-    """
-    从「热门系列」接口一次性获取数据（作为补充）。
-    接口：/x/web-interface/popular/series/one?number={n}
-    注意：此接口有时限流，仅作为补充源。
-    """
-    all_videos = []
-    base_url = "https://api.bilibili.com/x/web-interface/popular/series/one"
-
-    for n in range(1, 6):
-        url = f"{base_url}?number={n}"
-        print(f"[爬虫] 尝试 热门系列 #{n} ...")
-        data = _fetch_json(url)
-        if data is None:
-            continue
-
-        video_list = data.get("data", {}).get("list", [])
-        for item in video_list:
-            all_videos.append(_extract_video(item))
-
-        print(f"[爬虫] 热门系列 #{n} 获取 {len(video_list)} 条")
-        time.sleep(random.uniform(1.0, 2.0))
-
-    print(f"[爬虫] 热门系列共获取 {len(all_videos)} 条")
-    return all_videos
-
-
 # ── 主入口 ──────────────────────────────────────────────────
 
 
-def fetch_and_save(filename="data/raw_data.csv", pages=5):
+def fetch_and_save(filename="data/raw_data.csv", pages=5, append=False):
     """
     综合采集B站知识区热门视频数据并保存为CSV。
-    使用多源策略保证数据量：
-
-        1. 热门推荐（主源）：每页约 40 条，pages 页
-        2. 知识区动态（主源）：每页约 50 条，pages 页
-        3. 热门系列（补充源）：作为额外补充
 
     参数
     ----------
     filename : str
-        输出CSV文件路径（相对路径）。
+        输出CSV文件路径。
     pages : int
         每个主源采集的页数（每页约 40~50 条）。
+    append : bool
+        True=追加合并旧数据；False=直接覆盖。
 
-    返回
-    -------
-    pandas.DataFrame
-        采集到的视频数据。
+    返回 pandas.DataFrame
     """
-    print("=" * 50)
-    print("B站知识区数据爬虫 启动")
-    print("=" * 50)
+    _LOG("=" * 50)
+    _LOG("B站知识区数据爬虫 启动")
+    _LOG("=" * 50)
 
-    # 预热：访问首页获取 cookies
     _init_session()
-    print("[爬虫] Session 初始化完成")
+    _LOG("[爬虫] Session 初始化完成")
 
-    # 1. 热门推荐（主源）
+    # 1. 热门推荐
     popular_data = fetch_popular_list(pages=pages)
-    print(f"[爬虫] 热门推荐采集完毕，共 {len(popular_data)} 条")
+    _LOG(f"[爬虫] 热门推荐采集完毕，共 {len(popular_data)} 条")
 
-    # 2. 知识区动态（主源）
+    # 2. 知识区动态
     knowledge_data = fetch_knowledge_zone(pages=pages)
-    print(f"[爬虫] 知识区动态采集完毕，共 {len(knowledge_data)} 条")
+    _LOG(f"[爬虫] 知识区动态采集完毕，共 {len(knowledge_data)} 条")
 
-    # 3. 合并去重（热门系列接口已失效，忽略）
+    # 3. 合并去重
     all_videos = popular_data + knowledge_data
     seen = set()
     unique_videos = []
@@ -249,33 +211,49 @@ def fetch_and_save(filename="data/raw_data.csv", pages=5):
             seen.add(key)
             unique_videos.append(v)
 
-    df = pd.DataFrame(unique_videos)
-    print(f"[爬虫] 合并去重后共 {len(df)} 条视频")
+    df_new = pd.DataFrame(unique_videos)
+    _LOG(f"[爬虫] 新采集去重后共 {len(df_new)} 条")
 
-    # 5. 筛选知识区（tid 在知识区范围内）
-    knowledge_tids = set(KNOWLEDGE_TIDS.keys())
-    before = len(df)
-    df_in_knowledge = df[df["tid"].isin(knowledge_tids)]
-    print(f"[爬虫] 知识区筛选: {before} -> {len(df_in_knowledge)} 条")
-
-    # 如果有足够的知识区数据就用筛选后的，否则全部保留
-    if len(df_in_knowledge) >= 10:
-        df = df_in_knowledge.reset_index(drop=True)
-    else:
-        print(f"[爬虫] 知识区视频不足10条，保留全部数据")
-        df = df.reset_index(drop=True)
-
-    # 6. 保存 CSV
+    # 4. 追加/覆盖
     os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
-    df.to_csv(filename, index=False, encoding="utf-8-sig")
-    print(f"[爬虫] 数据已保存 -> {os.path.abspath(filename)} ({len(df)} 条)")
-    print("=" * 50)
 
-    return df
+    if append and os.path.exists(filename):
+        try:
+            df_old = pd.read_csv(filename, encoding="utf-8-sig")
+            _LOG(f"[爬虫] 读取已有数据 {len(df_old)} 条，准备合并")
+            df_all = pd.concat([df_old, df_new], ignore_index=True)
+            df_all = df_all.drop_duplicates(subset=["title", "owner_name"],
+                                            keep="last")
+            _LOG(f"[爬虫] 合并去重后共 {len(df_all)} 条")
+        except Exception:
+            _LOG(f"[爬虫] 读取旧文件失败，直接使用新数据")
+            df_all = df_new
+    else:
+        df_all = df_new
+        _LOG(f"[爬虫] 覆盖模式：直接写入")
+
+    # 5. 筛选知识区
+    knowledge_tids = set(KNOWLEDGE_TIDS.keys())
+    before = len(df_all)
+    df_in = df_all[df_all["tid"].isin(knowledge_tids)]
+    _LOG(f"[爬虫] 知识区筛选: {before} -> {len(df_in)} 条")
+
+    if len(df_in) >= 10:
+        df_final = df_in.reset_index(drop=True)
+    else:
+        _LOG(f"[爬虫] 知识区视频不足10条，保留全部数据")
+        df_final = df_all.reset_index(drop=True)
+
+    # 6. 保存
+    df_final.to_csv(filename, index=False, encoding="utf-8-sig")
+    _LOG(f"[爬虫] 数据已保存 -> {os.path.abspath(filename)} ({len(df_final)} 条)")
+    _LOG("=" * 50)
+
+    return df_final
 
 
 # ── 独立运行入口 ────────────────────────────────────────────
 
 if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
-    fetch_and_save("data/raw_data.csv", pages=5)
+    fetch_and_save("data/raw_data.csv", pages=5, append=False)
